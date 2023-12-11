@@ -18,13 +18,19 @@ env:
   # Common versions
   GO_VERSION: '1.20'
 
+permissions:
+  pull-requests: write
+  contents: read
+  actions: read
+  deployments: read
+
 jobs:
   unit-tests:
     runs-on: ubuntu-20.04
     environment: test
     steps:
       - name:  Set up Go ${{ env.GO_VERSION }}
-        uses: actions/setup-go@v4
+        uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION  }}
 

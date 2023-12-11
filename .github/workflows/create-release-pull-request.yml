@@ -14,6 +14,8 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  actions: read
+  deployments: read
 
 jobs:
   create-release-pull-request:
@@ -28,7 +30,7 @@ jobs:
           submodules: true
           fetch-depth: 0
           ref: "${{ github.event.inputs.based_on_branch }}"
-      - uses: actions/setup-go@v4
+      - uses: actions/setup-go@v5
         with:
           go-version: "1.20"
       - name: update release manifest

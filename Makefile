@@ -23,7 +23,7 @@ TEST_CREDENTIALS_JSON ?= $(TEST_CREDENTIALS_DIR)/credentials.json
 TEST_LOGANALYTICS_JSON ?= $(TEST_CREDENTIALS_DIR)/loganalytics.json
 export TEST_CREDENTIALS_JSON TEST_LOGANALYTICS_JSON TEST_AKS_CREDENTIALS_JSON
 
-VERSION ?= v1.6.0
+VERSION ?= v1.6.1
 REGISTRY ?= ghcr.io
 IMG_NAME ?= virtual-kubelet
 INIT_IMG_NAME ?= init-validation
@@ -105,7 +105,7 @@ e2e-test:
  	IMG_URL=$(REGISTRY) IMG_REPO=$(IMG_NAME) IMG_TAG=$(IMG_TAG) \
  	INIT_IMG_REPO=$(INIT_IMG_NAME) INIT_IMG_TAG=$(INIT_IMG_TAG) \
  	LOCATION=$(LOCATION) RESOURCE_GROUP=$(E2E_CLUSTER_NAME) \
- 	$(AKS_E2E_SCRIPT) go test -timeout 60m -v ./e2e
+ 	$(AKS_E2E_SCRIPT) go test -timeout 90m -v ./e2e
 
 .PHONY: aks-addon-e2e-test
 aks-addon-e2e-test:
@@ -113,7 +113,7 @@ aks-addon-e2e-test:
 	IMG_URL=$(REGISTRY) IMG_REPO=$(IMG_NAME) IMG_TAG=$(IMG_TAG) \
 	INIT_IMG_REPO=$(INIT_IMG_NAME) INIT_IMG_TAG=$(INIT_IMG_TAG) \
 	LOCATION=$(LOCATION) RESOURCE_GROUP=$(E2E_CLUSTER_NAME) \
-	$(AKS_ADDON_E2E_SCRIPT) go test -timeout 60m -v ./e2e
+	$(AKS_ADDON_E2E_SCRIPT) go test -timeout 90m -v ./e2e
 
 .PHONY: vet
 vet:

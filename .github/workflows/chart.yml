@@ -9,7 +9,9 @@ on:
 
 permissions:
   contents: write
-
+  actions: read
+  deployments: read
+  
 jobs:
   publish-helm-chart:
     if: github.event.pull_request.merged == true && contains(github.event.pull_request.title, 'update manifest and helm charts')
