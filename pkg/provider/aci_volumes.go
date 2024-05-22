@@ -16,7 +16,44 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 )
 
-func (p *ACIProvider) getAzureFileCSI(volume v1.Volume, namespace string) (*azaciv2.Volume, error) {
+func (p *ACIProvider) getSecret(namespace string, secretName string, secretsMap map[string]v1.Secret) (*v1.Secret, error) {
+
+	if secretsMap != nil {
+		secret, ok := secretsMap[secretName]
+		if !ok {
+			return nil, fmt.Errorf("the secret %s is not present in the map", secretName)
+		}
+		return &secret, nil
+	}
+	return p.secretL.Secrets(namespace).Get(secretName)
+}
+
+func (p *ACIProvider) listSecrets(namespace string, secretsMap map[string]v1.Secret) ([]*v1.Secret, error) {
+	secrets := []*v1.Secret{}
+	if secretsMap != nil {
+		for k := range secretsMap {
+			secret := secretsMap[k] // Create a copy of the secret
+			secrets = append(secrets, &secret) // Append the copy to the secrets slice
+		}
+		return secrets, nil
+	}
+
+	return p.secretL.Secrets(namespace).List(labels.Everything())
+}
+
+func (p *ACIProvider) getConfigMap(namespace string, configMapName string, configsMap map[string]v1.ConfigMap) (*v1.ConfigMap, error) {
+
+	if configsMap != nil {
+		configmap, ok := configsMap[configMapName]
+		if !ok {
+			return nil, fmt.Errorf("the configmap %s is not present in the map", configMapName)
+		}
+		return &configmap, nil
+	}
+	return p.configL.ConfigMaps(namespace).Get(configMapName)
+}
+
+func (p *ACIProvider) getAzureFileCSI(volume v1.Volume, namespace string, secretsMap map[string]v1.Secret) (*azaciv2.Volume, error) {
 	var secretName, shareName string
 	if volume.CSI.VolumeAttributes != nil && len(volume.CSI.VolumeAttributes) != 0 {
 		for k, v := range volume.CSI.VolumeAttributes {
@@ -39,7 +76,8 @@ func (p *ACIProvider) getAzureFileCSI(volume v1.Volume, namespace string) (*azac
 		return nil, fmt.Errorf("secret name for AzureFile CSI driver %s cannot be empty or nil", volume.Name)
 	}
 
-	secret, err := p.secretL.Secrets(namespace).Get(secretName)
+	//secret, err := p.secretL.Secrets(namespace).Get(secretName)
+	secret, err := p.getSecret(namespace, secretName, secretsMap)
 
 	if err != nil || secret == nil {
 		return nil, fmt.Errorf("the secret %s for AzureFile CSI driver %s is not found", secretName, volume.Name)
@@ -57,7 +95,7 @@ func (p *ACIProvider) getAzureFileCSI(volume v1.Volume, namespace string) (*azac
 		}}, nil
 }
 
-func (p *ACIProvider) getVolumes(ctx context.Context, pod *v1.Pod) ([]*azaciv2.Volume, error) {
+func (p *ACIProvider) getVolumes(ctx context.Context, pod *v1.Pod, secretsMap map[string]v1.Secret, configsMap map[string]v1.ConfigMap) ([]*azaciv2.Volume, error) {
 	volumes := make([]*azaciv2.Volume, 0, len(pod.Spec.Volumes))
 	podVolumes := pod.Spec.Volumes
 	for i := range podVolumes {
@@ -65,7 +103,7 @@ func (p *ACIProvider) getVolumes(ctx context.Context, pod *v1.Pod) ([]*azaciv2.V
 		if podVolumes[i].CSI != nil {
 			// Check if the CSI driver is file (Disk is not supported by ACI)
 			if podVolumes[i].CSI.Driver == AzureFileDriverName {
-				csiVolume, err := p.getAzureFileCSI(podVolumes[i], pod.Namespace)
+				csiVolume, err := p.getAzureFileCSI(podVolumes[i], pod.Namespace, secretsMap)
 				if err != nil {
 					return nil, err
 				}
@@ -78,7 +116,8 @@ func (p *ACIProvider) getVolumes(ctx context.Context, pod *v1.Pod) ([]*azaciv2.V
 
 		// Handle the case for the AzureFile volume.
 		if podVolumes[i].AzureFile != nil {
-			secret, err := p.secretL.Secrets(pod.Namespace).Get(podVolumes[i].AzureFile.SecretName)
+			//secret, err := p.secretL.Secrets(pod.Namespace).Get(podVolumes[i].AzureFile.SecretName)
+			secret, err := p.getSecret(pod.Namespace, podVolumes[i].AzureFile.SecretName, secretsMap)
 			if err != nil {
 				return volumes, err
 			}
@@ -127,7 +166,8 @@ func (p *ACIProvider) getVolumes(ctx context.Context, pod *v1.Pod) ([]*azaciv2.V
 		// Handle the case for Secret volume.
 		if podVolumes[i].Secret != nil {
 			paths := make(map[string]*string)
-			secret, err := p.secretL.Secrets(pod.Namespace).Get(podVolumes[i].Secret.SecretName)
+			//secret, err := p.secretL.Secrets(pod.Namespace).Get(podVolumes[i].Secret.SecretName)
+			secret, err := p.getSecret(pod.Namespace, podVolumes[i].Secret.SecretName, secretsMap)
 			if podVolumes[i].Secret.Optional != nil && !*podVolumes[i].Secret.Optional && k8serr.IsNotFound(err) {
 				return nil, fmt.Errorf("secret %s is required by Pod %s and does not exist", podVolumes[i].Secret.SecretName, pod.Name)
 			}
@@ -152,7 +192,8 @@ func (p *ACIProvider) getVolumes(ctx context.Context, pod *v1.Pod) ([]*azaciv2.V
 		// Handle the case for ConfigMap volume.
 		if podVolumes[i].ConfigMap != nil {
 			paths := make(map[string]*string)
-			configMap, err := p.configL.ConfigMaps(pod.Namespace).Get(podVolumes[i].ConfigMap.Name)
+			//configMap, err := p.configL.ConfigMaps(pod.Namespace).Get(podVolumes[i].ConfigMap.Name)
+			configMap, err := p.getConfigMap(pod.Namespace, podVolumes[i].ConfigMap.Name, configsMap)
 			if podVolumes[i].ConfigMap.Optional != nil && !*podVolumes[i].ConfigMap.Optional && k8serr.IsNotFound(err) {
 				return nil, fmt.Errorf("ConfigMap %s is required by Pod %s and does not exist", podVolumes[i].ConfigMap.Name, pod.Name)
 			}
@@ -186,7 +227,8 @@ func (p *ACIProvider) getVolumes(ctx context.Context, pod *v1.Pod) ([]*azaciv2.V
 				switch {
 				case source.ServiceAccountToken != nil:
 					// This is still stored in a secret, hence the dance to figure out what secret.
-					secrets, err := p.secretL.Secrets(pod.Namespace).List(labels.Everything())
+					//secrets, err := p.secretL.Secrets(pod.Namespace).List(labels.Everything())
+					secrets, err := p.listSecrets(pod.Namespace, secretsMap)
 					if err != nil {
 						return nil, err
 					}
@@ -218,7 +260,8 @@ func (p *ACIProvider) getVolumes(ctx context.Context, pod *v1.Pod) ([]*azaciv2.V
 					}
 
 				case source.Secret != nil:
-					secret, err := p.secretL.Secrets(pod.Namespace).Get(source.Secret.Name)
+					//secret, err := p.secretL.Secrets(pod.Namespace).Get(source.Secret.Name)
+					secret, err := p.getSecret(pod.Namespace, source.Secret.Name, secretsMap)
 					if source.Secret.Optional != nil && !*source.Secret.Optional && k8serr.IsNotFound(err) {
 						return nil, fmt.Errorf("projected secret %s is required by pod %s and does not exist", source.Secret.Name, pod.Name)
 					}
@@ -247,7 +290,8 @@ func (p *ACIProvider) getVolumes(ctx context.Context, pod *v1.Pod) ([]*azaciv2.V
 					}
 
 				case source.ConfigMap != nil:
-					configMap, err := p.configL.ConfigMaps(pod.Namespace).Get(source.ConfigMap.Name)
+					//configMap, err := p.configL.ConfigMaps(pod.Namespace).Get(source.ConfigMap.Name)
+					configMap, err := p.getConfigMap(pod.Namespace, source.ConfigMap.Name, configsMap)
 					if source.ConfigMap.Optional != nil && !*source.ConfigMap.Optional && k8serr.IsNotFound(err) {
 						return nil, fmt.Errorf("projected configMap %s is required by pod %s and does not exist", source.ConfigMap.Name, pod.Name)
 					}

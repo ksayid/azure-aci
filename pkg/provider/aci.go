@@ -311,6 +311,112 @@ func addAzureAttributes(ctx context.Context, span trace.Span, p *ACIProvider) co
 	})
 }
 
+func (p *ACIProvider) CreatePodData(ctx context.Context, pod *v1.Pod, secretsMap map[string]v1.Secret, configMaps map[string]v1.ConfigMap) (*azaciv2.ContainerGroup, error) {
+	var err error
+	ctx, span := trace.StartSpan(ctx, "aci.CreatePod")
+	defer span.End()
+	ctx = addAzureAttributes(ctx, span, p)
+
+	cg := &azaciv2.ContainerGroup{
+		Properties: &azaciv2.ContainerGroupPropertiesProperties{},
+	}
+
+	os := azaciv2.OperatingSystemTypes(p.operatingSystem)
+	policy := azaciv2.ContainerGroupRestartPolicy(pod.Spec.RestartPolicy)
+
+	cg.Location = &p.region
+	cg.Properties.RestartPolicy = &policy
+	cg.Properties.OSType = &os
+
+	// get containers
+	containers, err := p.getContainers(pod)
+	if err != nil {
+		return nil, errors.Wrapf(err, "failed to get containers for pod %s", pod.Name)
+	}
+	// get registry creds
+	creds, err := p.getImagePullSecrets(pod)
+	if err != nil {
+		return nil, errors.Wrapf(err, "failed to get image pull secrets for pod %s", pod.Name)
+	}
+	// get volumes
+	volumes, err := p.getVolumes(ctx, pod, secretsMap, configMaps)
+	if err != nil {
+		return nil, errors.Wrapf(err, "failed to get volumes for pod %s", pod.Name)
+
+	}
+
+	if p.enabledFeatures.IsEnabled(ctx, featureflag.InitContainerFeature) {
+		// get initContainers
+		initContainers, err := p.getInitContainers(ctx, pod)
+		if err != nil {
+			return nil, errors.Wrapf(err, "failed to get init containers for pod %s", pod.Name)
+		}
+		cg.Properties.InitContainers = initContainers
+	}
+
+	// confidential compute proeprties
+	if p.enabledFeatures.IsEnabled(ctx, featureflag.ConfidentialComputeFeature) {
+		// set confidentialComputeProperties
+		p.setConfidentialComputeProperties(ctx, pod, cg)
+	}
+
+	// assign all the things
+	cg.Properties.Containers = containers
+	cg.Properties.Volumes = volumes
+	cg.Properties.ImageRegistryCredentials = creds
+	cg.Properties.Diagnostics = p.getDiagnostics(pod)
+
+	filterWindowsServiceAccountSecretVolume(ctx, p.operatingSystem, cg)
+
+	// create ipaddress if containerPort is used
+	count := 0
+	for _, container := range containers {
+		count = count + len(container.Properties.Ports)
+	}
+	ports := make([]*azaciv2.Port, 0, count)
+	for c := range containers {
+		containerPorts := containers[c].Properties.Ports
+		for p := range containerPorts {
+			ports = append(ports, &azaciv2.Port{
+				Port:     containerPorts[p].Port,
+				Protocol: &util.ContainerGroupNetworkProtocolTCP,
+			})
+		}
+	}
+	if len(ports) > 0 && p.providerNetwork.SubnetName == "" {
+		cg.Properties.IPAddress = &azaciv2.IPAddress{
+			Ports: ports,
+			Type:  &util.ContainerGroupIPAddressTypePublic,
+		}
+
+		if dnsNameLabel := pod.Annotations[virtualKubeletDNSNameLabel]; dnsNameLabel != "" {
+			cg.Properties.IPAddress.DNSNameLabel = &dnsNameLabel
+		}
+	}
+
+	podUID := string(pod.UID)
+	podCreationTimestamp := pod.CreationTimestamp.String()
+	cg.Tags = map[string]*string{
+		"PodName":           &pod.Name,
+		"NodeName":          &pod.Spec.NodeName,
+		"Namespace":         &pod.Namespace,
+		"UID":               &podUID,
+		"CreationTimestamp": &podCreationTimestamp,
+	}
+
+	p.providerNetwork.AmendVnetResources(ctx, *cg, pod, p.clusterDomain)
+
+	// windows containers don't support kube-proxy nor realtime metrics
+	if cg.Properties.OSType != nil &&
+		*cg.Properties.OSType != azaciv2.OperatingSystemTypesWindows {
+		cg.Properties.Extensions = p.containerGroupExtensions
+	}
+
+	log.G(ctx).Debugf("start creating pod %v", pod.Name)
+	// TODO: Run in a go routine to not block workers, and use tracker.UpdatePodStatus() based on result.
+	return cg, nil
+}
+
 // CreatePod accepts a Pod definition and creates
 // an ACI deployment
 func (p *ACIProvider) CreatePod(ctx context.Context, pod *v1.Pod) error {
@@ -341,7 +447,7 @@ func (p *ACIProvider) CreatePod(ctx context.Context, pod *v1.Pod) error {
 		return err
 	}
 	// get volumes
-	volumes, err := p.getVolumes(ctx, pod)
+	volumes, err := p.getVolumes(ctx, pod, nil, nil)
 	if err != nil {
 		return err
 
