@@ -18,8 +18,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"os"
+	"strings"
 
 	yaml "sigs.k8s.io/yaml"
 
@@ -72,60 +72,113 @@ func main() {
 		Long:  desc,
 		Run: func(cmd *cobra.Command, args []string) {
 			if len(args) != 1 {
-				fmt.Println("Usage podspec-to-arm <input-file-name> [--output-file-name <output file>] [--print-json]")
-				return
+				fmt.Fprintln(os.Stderr, "Usage podspec-to-arm <input-file-name> [--output-file-name <output file>] [--print-json]")
+				os.Exit(1)
 			}
 
 			fileName := args[0]
 
 			// create pod object from podspec yaml file
-			file, err := ioutil.ReadFile(fileName)
+			file, err := os.ReadFile(fileName)
 			if err != nil {
-				fmt.Println(err)
-				return
+				fmt.Fprintln(os.Stderr, "Error reading file: ", err)
+				os.Exit(1)
 			}
 
 			pod := v1.Pod{}
-			_ = yaml.Unmarshal(file, &pod)
+			err = yaml.Unmarshal(file, &pod)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "Error unmarshalling YAML: ", err)
+				os.Exit(1)
+			}
 
 			aciMocks := createNewACIMock()
 			provider, err := createTestProvider(aciMocks, NewMockConfigMapLister(),
 				NewMockSecretLister(), NewMockPodLister(), nil)
 			if err != nil {
-				fmt.Println("got error init provider")
-				fmt.Println(err)
+				fmt.Fprintln(os.Stderr, "got error init provider")
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
 			}
 
 			// read secrets from file
 			secretsMap := map[string]corev1.Secret{}
 			if k8secrets != "" {
-				secretsfile, err := ioutil.ReadFile(k8secrets)
+				secretsfile, err := os.ReadFile(k8secrets)
 				if err != nil {
-					fmt.Println(err)
-					return
+					fmt.Fprintln(os.Stderr, "Error reading secrets file:", err)
+					os.Exit(1)
 				}
 				err = yaml.Unmarshal([]byte(secretsfile), &secretsMap)
 				if err != nil {
-					fmt.Println("error unmarshalling secrets map")
-					fmt.Println(err)
-					return
+					fmt.Fprintln(os.Stderr, "Error unmarshalling secrets:", err)
+					fmt.Fprintf(os.Stderr, "Make sure the file is of the format: \n<secret-name>:\n  apiVersion: v1\n  kind: Secret\n  metadata\n    name: <secret-name>\n  data:\n    <key>: <value>\n")
+					os.Exit(1)
+				}
+
+				// fill in values in pod with secrets data
+				for i := range pod.Spec.Containers {
+					container := &pod.Spec.Containers[i]
+					for j := range container.Env {
+						envVar := &container.Env[j]
+						if envVar.ValueFrom != nil && envVar.ValueFrom.SecretKeyRef != nil {
+							secretName := envVar.ValueFrom.SecretKeyRef.Name
+							key := envVar.ValueFrom.SecretKeyRef.Key
+							secret, ok := secretsMap[secretName]
+							if !ok {
+								fmt.Fprintf(os.Stderr, "Secret %s not found in secrets file\n", secretName)
+								os.Exit(1)
+							}
+							val, ok := secret.Data[key]
+							if !ok {
+								fmt.Fprintf(os.Stderr, "Key %s not found in secret %s\n", key, secretName)
+								os.Exit(1)
+							}
+
+							// remove trailing newline characters
+							envVar.Value = strings.TrimRight(string(val), "\r\n")
+						}
+					}
 				}
 			}
 
 			// read configmaps from file
 			configsMap := map[string]corev1.ConfigMap{}
 			if k8configmaps != "" {
-				configmapfile, err := ioutil.ReadFile(k8configmaps)
+				configmapfile, err := os.ReadFile(k8configmaps)
 				if err != nil {
-					fmt.Println(err)
-					return
+					fmt.Fprintln(os.Stderr, "Error reading configmaps file:", err)
+					os.Exit(1)
 				}
 				err = yaml.Unmarshal([]byte(configmapfile), &configsMap)
 
 				if err != nil {
-					fmt.Println("error unmarshalling config map")
-					fmt.Println(err)
-					return
+					fmt.Fprintln(os.Stderr, "Error unmarshalling configmaps:", err)
+					fmt.Fprintf(os.Stderr, "Make sure the file is of the format: \n<configmap-name>:\n  apiVersion: v1\n  kind: ConfigMap\n  metadata\n    name: <configmap-name>\n  data:\n    <key>: <value>\n")
+					os.Exit(1)
+				}
+
+				// fill in values in pod with configmaps data
+				for i := range pod.Spec.Containers {
+					container := &pod.Spec.Containers[i]
+					for j := range container.Env {
+						envVar := &container.Env[j]
+						if envVar.ValueFrom != nil && envVar.ValueFrom.ConfigMapKeyRef != nil {
+							configName := envVar.ValueFrom.ConfigMapKeyRef.Name
+							key := envVar.ValueFrom.ConfigMapKeyRef.Key
+							config, ok := configsMap[configName]
+							if !ok {
+								fmt.Fprintf(os.Stderr, "ConfigMap %s not found in configmaps file\n", configName)
+								os.Exit(1)
+							}
+							val, ok := config.Data[key]
+							if !ok {
+								fmt.Fprintf(os.Stderr, "Key %s not found in configmap %s\n", key, configName)
+								os.Exit(1)
+							}
+							envVar.Value = string(val)
+						}
+					}
 				}
 			}
 
@@ -134,11 +187,18 @@ func main() {
 			// create container group
 			cg, err := provider.CreatePodData(context.Background(), &pod, secretsMap, configsMap)
 			if err != nil {
-				fmt.Println(err)
+				fmt.Fprintln(os.Stderr, "Error creating pod data", err)
+				os.Exit(1)
+			}
+			// fill in namespace if not present
+			if pod.Namespace == "" {
+				pod.Namespace = "default"
 			}
 			cgName := fmt.Sprintf("%s-%s", pod.Namespace, pod.Name)
 			cgType := "Microsoft.ContainerInstance/containerGroups"
 
+			// NOTE: to be a valid ARM template, there should be an apiVersion
+			// But this is not necessary for policy generation
 			containerGroup := azaciv2.ContainerGroup{
 				Properties: cg.Properties,
 				Name:       &cgName,
@@ -172,7 +232,7 @@ func main() {
 				injectVolumeMount(&containerGroup, vm.volumename, vm.mountpath, vm.readonly)
 			}
 
-			// create ARM object to encapsulate this cg object with continer group resource
+			// create ARM object to encapsulate this cg object with container group resource
 			armTemplate := ARMSpec{
 				Schema:         "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
 				ContentVersion: "1.0.0.0",
@@ -184,7 +244,8 @@ func main() {
 
 			arm_json_bytes, err := json.MarshalIndent(armTemplate, "", "\t")
 			if err != nil {
-				fmt.Println(err)
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
 			}
 
 			outputjson := string(arm_json_bytes)
@@ -199,16 +260,16 @@ func main() {
 			// write output to file
 			f, err := os.Create(outFileName)
 			if err != nil {
-				fmt.Println(err)
-				return
+				fmt.Fprintln(os.Stderr, "Error creating output file:", err)
+				os.Exit(1)
 			}
 			defer f.Close()
 			n, err := f.Write([]byte(outputjson))
 			if err != nil {
-				fmt.Println(err)
-				return
+				fmt.Fprintln(os.Stderr, "Error writing to output file:", err)
+				os.Exit(1)
 			}
-			fmt.Printf("written %d bytes to file %s\n", n, outFileName)
+			fmt.Printf("Written %d bytes to file %s\n", n, outFileName)
 		},
 	}
 	flags := cmd.Flags()
@@ -246,8 +307,8 @@ func createTestProvider(aciMocks *MockACIProvider, configMapMocker *MockConfigMa
 
 	err := setAuthConfig()
 	if err != nil {
-		fmt.Println(err)
-		//return nil, err
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
 
 	if kubeClient == nil {
@@ -344,7 +405,11 @@ func injectEnvVars(containergroup *azaciv2.ContainerGroup) {
                 }
               ]`, K8Port, K8PortTCP, K8PortTCPProto, K8PortTCPPort, K8PortTCPAddr, K8ServiceHost, K8ServicePort, K8ServicePortHTTPS)
 	k8EnvVars := []*azaciv2.EnvironmentVariable{}
-	json.Unmarshal([]byte(k8EnvVarsString), &k8EnvVars)
+	err := json.Unmarshal([]byte(k8EnvVarsString), &k8EnvVars)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Error unmarshalling environment variables:", err)
+		os.Exit(1)
+	}
 	for i := range containergroup.Properties.Containers {
 		container := containergroup.Properties.Containers[i]
 		if container.Properties.EnvironmentVariables == nil {
@@ -379,8 +444,3 @@ func injectVolumeMount(containergroup *azaciv2.ContainerGroup, volumename string
 	}
 	containergroup.Properties.Volumes = append(containergroup.Properties.Volumes, k8Volume)
 }
-
-
-
-//TODO:
-//2. Better error messages -> check various failures and throw better messages
