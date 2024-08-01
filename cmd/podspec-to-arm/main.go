@@ -91,7 +91,6 @@ func main() {
 				fmt.Fprintln(os.Stderr, "Error unmarshalling YAML: ", err)
 				os.Exit(1)
 			}
-
 			aciMocks := createNewACIMock()
 			provider, err := createTestProvider(aciMocks, NewMockConfigMapLister(),
 				NewMockSecretLister(), NewMockPodLister(), nil)
@@ -307,8 +306,7 @@ func createTestProvider(aciMocks *MockACIProvider, configMapMocker *MockConfigMa
 
 	err := setAuthConfig()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		fmt.Println(err)
 	}
 
 	if kubeClient == nil {
