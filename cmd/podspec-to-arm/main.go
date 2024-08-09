@@ -46,6 +46,7 @@ var (
 	azConfig                  = auth.Config{}
 	k8secrets                 = ""
 	k8configmaps              = ""
+	k8spersistentvolumes      = ""
 	K8Port                    = "tcp://10.0.0.1:443"
 	K8PortTCP                 = "tcp://10.0.0.1:443"
 	K8PortTCPProto            = "tcp"
@@ -181,6 +182,50 @@ func main() {
 				}
 			}
 
+			type volumeMount struct {
+				volumename string
+				mountpath  string
+				readonly   bool
+			}
+
+			newVolumeMounts := []volumeMount{}
+
+			persistentVolumes := map[string]corev1.PersistentVolume{}
+			if k8spersistentvolumes != "" {
+				pvfile, err := os.ReadFile(k8spersistentvolumes)
+				if err != nil {
+					fmt.Fprintln(os.Stderr, "Error reading persistent volumes file:", err)
+					os.Exit(1)
+				}
+				err = yaml.Unmarshal([]byte(pvfile), &persistentVolumes)
+				if err != nil {
+					fmt.Fprintln(os.Stderr, "Error unmarshalling persistent volumes:", err)
+					fmt.Fprintf(os.Stderr, "Make sure the file is of the format: \n<pv-name>:\n  apiVersion: v1\n  kind: PersistentVolume\n  metadata\n    name: <pv-name>\n  spec:\n    capacity:\n      storage: <storage-size>\n    accessModes:\n      - <access-mode>\n    persistentVolumeReclaimPolicy: <reclaim-policy>\n    storageClassName: <storage-class>\n    volumeMode: <volume-mode>\n    azureDisk:\n      kind: Managed\n      diskName: <disk-name>\n      diskURI: <disk-uri>\n      cachingMode: <caching-mode>\n      fsType: <fs-type>\n      readOnly: <read-only>\n")
+					os.Exit(1)
+				}
+				// fill in values in pod with persistent volumes data
+				for i := range pod.Spec.Containers {
+					container := &pod.Spec.Containers[i]
+					for j := range container.VolumeMounts {
+						tempVolumeMount := &container.VolumeMounts[j]
+						pvName := tempVolumeMount.Name
+						pv, ok := persistentVolumes[pvName]
+						if !ok {
+							fmt.Fprintf(os.Stderr, "Persistent Volume %s not found in persistent volumes file\n", pvName)
+							os.Exit(1)
+						}
+
+						// these mounts are spoofed as emptydirs to behave correctly in the policy
+						newVolumeMounts = append(newVolumeMounts, volumeMount{
+							volumename: pvName,
+							mountpath:  "sandbox:///tmp/atlas/emptydir/.+",
+							readonly:   *(pv.Spec.AzureDisk.ReadOnly),
+						})
+					}
+				}
+			}
+
+
 			//provider := azproviderv2.ACIProvider{}
 			//provider.enabledFeatures = featureflag.InitFeatureFlag(context.Background())
 			// create container group
@@ -214,18 +259,15 @@ func main() {
 
 			injectEnvVars(&containerGroup)
 
-			type volumeMount struct {
-				volumename string
-				mountpath  string
-				readonly   bool
-			}
-
 			// inject volume mounts
 			volumeMounts := []volumeMount{
 				{"kube-api-access-123", "/var/run/secrets/kubernetes.io/serviceaccount", false},
 				{"kube-hosts-123", "/etc/hosts", false},
 				{"kube-termination-log-123", "/dev/termination-log", false},
 			}
+
+			// combine newVolumeMounts with existing volume mounts
+			volumeMounts = append(volumeMounts, newVolumeMounts...)
 
 			for _, vm := range volumeMounts {
 				injectVolumeMount(&containerGroup, vm.volumename, vm.mountpath, vm.readonly)
