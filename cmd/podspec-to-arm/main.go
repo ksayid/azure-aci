@@ -45,7 +45,7 @@ var (
 	kubeConfigPath            = os.Getenv("KUBECONFIG")
 	azConfig                  = auth.Config{}
 	k8secrets                 = ""
-	k8configmaps              = ""
+	k8sconfigmaps             = ""
 	k8spersistentvolumes      = ""
 	K8Port                    = "tcp://10.0.0.1:443"
 	K8PortTCP                 = "tcp://10.0.0.1:443"
@@ -144,8 +144,8 @@ func main() {
 
 			// read configmaps from file
 			configsMap := map[string]corev1.ConfigMap{}
-			if k8configmaps != "" {
-				configmapfile, err := os.ReadFile(k8configmaps)
+			if k8sconfigmaps != "" {
+				configmapfile, err := os.ReadFile(k8sconfigmaps)
 				if err != nil {
 					fmt.Fprintln(os.Stderr, "Error reading configmaps file:", err)
 					os.Exit(1)
@@ -316,7 +316,8 @@ func main() {
 	flags := cmd.Flags()
 	flags.StringVar(&outFileName, "output-file-name", outFileName, "name of the output file")
 	flags.StringVar(&k8secrets, "secrets", k8secrets, "kubernetes secrets filename")
-	flags.StringVar(&k8configmaps, "configmaps", k8configmaps, "kubernetes config maps filename")
+	flags.StringVar(&k8sconfigmaps, "configmaps", k8sconfigmaps, "kubernetes config maps filename")
+	flags.StringVar(&k8spersistentvolumes, "persistent-volumes", k8spersistentvolumes, "kubernetes persistent volumes filename")
 	flags.StringVar(&K8Port, "kubernetes-port", K8Port, "KUBERNETES_PORT environment variable")
 	flags.StringVar(&K8PortTCP, "kubernetes-port-tcp", K8PortTCP, "KUBERNETES_PORT_443_TCP environment variable")
 	flags.StringVar(&K8PortTCPProto, "kubernetes-port-tcp-proto", K8PortTCPProto, "KUBERNETES_PORT_443_TCP_PROTO environment variable")
