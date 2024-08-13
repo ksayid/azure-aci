@@ -1006,30 +1006,8 @@ func (p *ACIProvider) PortForward(ctx context.Context, namespace, pod string, po
 }
 
 func (p *ACIProvider) getImagePullSecrets(pod *v1.Pod) ([]*azaciv2.ImageRegistryCredential, error) {
-	ips := make([]*azaciv2.ImageRegistryCredential, 0, len(pod.Spec.ImagePullSecrets))
-	for _, ref := range pod.Spec.ImagePullSecrets {
-		secret, err := p.secretL.Secrets(pod.Namespace).Get(ref.Name)
-		if err != nil {
-			return ips, err
-		}
-		if secret == nil {
-			return nil, fmt.Errorf("error getting image pull secret")
-		}
-		switch secret.Type {
-		case v1.SecretTypeDockercfg:
-			ips, err = readDockerCfgSecret(secret, ips)
-		case v1.SecretTypeDockerConfigJson:
-			ips, err = readDockerConfigJSONSecret(secret, ips)
-		default:
-			return nil, fmt.Errorf("image pull secret type is not one of kubernetes.io/dockercfg or kubernetes.io/dockerconfigjson")
-		}
-
-		if err != nil {
-			return ips, err
-		}
-
-	}
-	return ips, nil
+	// Return an empty slice. Not needed for acipolicygen.
+	return []*azaciv2.ImageRegistryCredential{}, nil
 }
 
 func makeRegistryCredential(server string, authConfig AuthConfig) (*azaciv2.ImageRegistryCredential, error) {
